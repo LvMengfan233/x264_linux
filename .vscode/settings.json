@@ -1,0 +1,8 @@
+{
+    "C_Cpp.intelliSenseEngineFallback": "disabled", //需要添加的
+    "C_Cpp.intelliSenseEngine": "Tag Parser",
+    "files.associations": {
+        "common.h": "c",
+        "analyse.h": "c"
+    }, //  需要添加的
+}
