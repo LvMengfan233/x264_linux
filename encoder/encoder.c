@@ -3698,6 +3698,58 @@ static void CLHE(uint8_t *p_src, uint8_t *p_he, int width, int height, int strid
 #endif
 
 
+#if gamma
+static void bilateralFilter(uint8_t* mask, int row, int col, int Window_D, float varD, float varR, int stride)
+{
+    float w = 0; //卷积核
+    float power = 0; //幂
+    float sumW = 0; //卷积核的和
+    float sumGrayW = 0; //像素与卷积核的乘积的和
+    int x = 0, y = 0, k = 0, l = 0;
+    //遍历图像数据
+    for (x = Window_D / 2; x < row - Window_D / 2; x++)
+    {
+        for (y = Window_D / 2; y < col - Window_D / 2; y++)
+        {
+            //求卷积核w  w = d * r (空域核d，值域核r)
+            for (k = x - Window_D / 2; k <= x + Window_D / 2; k++)
+            {
+                for (l = y - Window_D / 2; l <= y + Window_D / 2; l++)
+                {
+                    power = (pow((x - k), 2) + pow((y - l), 2)) / (2 * varD * varD);
+                    power += pow((mask[x*stride +y] - mask[k*stride +l]), 2) / (2 * varR * varR);
+                    w = exp(-power);
+
+                    //像素与卷积核的乘积的和
+                    sumGrayW += mask[k*stride + l] * w;
+                    //卷积核的和
+                    sumW += w;
+                }
+            }
+            //计算窗口中心像素值 = 像素与卷积核的乘积的和 / 卷积核的和
+            mask[x*stride + y] = (uint8_t)(255 - sumGrayW / sumW);
+
+            //每算完一个像素值清零
+            sumGrayW = 0;
+            sumW = 0;
+        }
+    }
+}
+
+static void inverse_img(uint8_t* mask, int row, int col, int stride) 
+{
+    int i = 0, j = 0;
+    for (i = 0; i < row; ++i) 
+    {
+        for (j = 0; j < col; ++j)
+        {
+            mask[i*stride + j] = 255 - mask[i*stride + j];
+        }
+    }
+}
+#endif
+
+
 static void* slices_write(x264_t* h)
 {
 	int i_slice_num = 0;
@@ -3717,7 +3769,10 @@ static void* slices_write(x264_t* h)
 		// h->param.pic_cnt++;
 
 		uint8_t* p_gamma = (uint8_t*)malloc(sizeof(uint8_t) * (h->fenc->i_stride[0] * h->param.i_height));
+        uint8_t* mask = (uint8_t*)malloc(sizeof(uint8_t) * (h->fenc->i_stride[0] * h->param.i_height));
 		memcpy(p_gamma, h->fenc->plane[0], sizeof(uint8_t) * (h->fenc->i_stride[0] * h->param.i_height));
+        memcpy(mask, h->fenc->plane[0], sizeof(uint8_t) * (h->fenc->i_stride[0] * h->param.i_height));
+
 #if gamma			
 		int temp;
 		int size = h->param.i_width * h->param.i_height;
@@ -3729,16 +3784,23 @@ static void* slices_write(x264_t* h)
 				sum += g_src[i * h->fenc->i_stride[0] + j];
 			}
 		}
-		int mean = sum / size;
+		int mean = sum / size; // 整体亮度均值
+
+        bilateralFilter(mask, h->param.i_height, h->param.i_width, 3, 10, 10, h->fenc->i_stride[0]);
+        inverse_img(mask, h->param.i_height, h->param.i_width, h->fenc->i_stride[0]);
 
 		for (int i = 0; i < h->param.i_height; i++)
 		{
 			for (int j = 0; j < h->param.i_width; j++)
 			{
-				float a = 1.0 * g_src[i * h->fenc->i_stride[0] + j] / 256;
-				float gam_ratio = 1.0 + 1.0 * (mean - 128) / 100000;
+				float a = 1.0 * g_src[i*h->fenc->i_stride[0] + j] / 255;
+                float gam_power = (mean - mask[i*h->fenc->i_stride[0] + j]) / 128.0;
+                float gam_ratio = pow(2, gam_power); 
+
+				// float gam_ratio = 1.0 + 1.0 * (mean - 128) / 100000; // 待修改
+                
 				float s = pow(a, gam_ratio);
-				temp = floor(s*256+0.5);
+				temp = floor(s*255+0.5);
 
 				if (temp > 255)
 				{
@@ -3760,6 +3822,7 @@ static void* slices_write(x264_t* h)
 		memcpy(h->fenc->plane[0], p_gamma, sizeof(uint8_t) * (h->fenc->i_stride[0] * h->param.i_height));
 
 		free(p_gamma);
+        free(mask);
 	}
 
 //=============================================================直方图均衡化 Y分量
@@ -4101,7 +4164,10 @@ static void* slices_write(x264_t* h)
 
 	}
 
-
+	free(h->fenc->Lum_Y);
+    free(h->fenc->Lum_bg);
+    free(h->fenc->Lum_f2);
+    free(h->fenc->Lum_sjnd);
 
 
 	/* init stats */
@@ -4248,404 +4314,6 @@ int x264_encoder_invalidate_reference(x264_t* h, int64_t pts)
 	}
 	return 0;
 }
-
-
-
-/*
-
-#if gaussian_new_avx2//函數定義
-
-static int g_gauss_coeff[9] = { 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-
-static void init_gauss_coeff(int* coef)
-{
-	//**** calculate the gaussian template d_gauss
-	const int       N = 7;
-	const double    sigma = 1.0;
-
-	int             radius = N / 2;
-	double          d_sum = 0;
-	double* d_gauss = (double*)malloc(sizeof(double) * N * N);
-
-	for (int i = 0; i < N; i++)
-	{
-		for (int j = 0; j < N; j++)
-		{
-			double distance = (radius - i) * (radius - i) + (radius - j) * (radius - j);
-			d_gauss[i * N + j] = exp((0 - distance) / (2 * sigma * sigma)) / 2 * PI_gaussian * sigma * sigma;
-		}
-	}
-
-	d_sum += d_gauss[3 * N] + d_gauss[3 * N + 1] + d_gauss[3 * N + 2] + d_gauss[3 * N + 3] + d_gauss[3 * N + 4] + d_gauss[3 * N + 5] + d_gauss[3 * N + 6];
-	d_sum += d_gauss[3] + d_gauss[N + 3] + d_gauss[2 * N + 3] + d_gauss[4 * N + 3] + d_gauss[5 * N + 3] + d_gauss[6 * N + 3];
-	d_sum += d_gauss[2 * N + 2] + d_gauss[2 * N + 4] + d_gauss[4 * N + 2] + d_gauss[4 * N + 4];
-
-	coef[0] = (int)((d_gauss[3] / d_sum) * 128);
-	coef[1] = (int)((d_gauss[N + 3] / d_sum) * 128);
-	coef[2] = (int)((d_gauss[2 * N + 2] / d_sum) * 128);
-	coef[3] = (int)((d_gauss[2 * N + 3] / d_sum) * 128);
-	coef[4] = (int)((d_gauss[2 * N + 4] / d_sum) * 128);
-	coef[5] = (int)((d_gauss[3 * N] / d_sum) * 128);
-	coef[6] = (int)((d_gauss[3 * N + 1] / d_sum) * 128);
-	coef[7] = (int)((d_gauss[3 * N + 2] / d_sum) * 128);
-	coef[8] = 128 - 2 * (coef[0] + coef[1] + coef[2] + coef[3] + coef[4] + coef[5] + coef[6] + coef[7]);
-
-}
-
-static void gaussian_filter_avx2(uint8_t* dst, int i_dst, uint8_t* src, int i_src, int* coef, int lcu_width, int lcu_height)
-{
-	int8_t* imgPad1, * imgPad2, * imgPad3, * imgPad4, * imgPad5, * imgPad6;
-
-	__m256i T00, T01, T10, T11, T20, T21, T30, T31, T40, T41, T50, T51, T60, T61, T70, T71, T80, T81, T82, T83;
-	__m256i T8;
-	__m256i T000, T001, T100, T101, T200, T201, T300, T301, T400, T401, T500, T501, T600, T601, T700, T701;
-	__m256i C0, C1, C2, C3, C4, C5, C6, C7, C8;
-	__m256i S0, S00, S01, S1, S10, S11, S2, S20, S21, S3, S30, S31, S4, S40, S41, S5, S50, S51, S6, S7, S60, S61, S70, S71, SS1, SS2, SS3, SS4, S;
-	__m256i mAddOffset;
-	__m256i mZero = _mm256_set1_epi16(0);
-	__m256i mMax = _mm256_set1_epi16((short)((1 << 8) - 1));
-	__m128i m0, m1;
-
-	int i, j;
-	int startPos = 0;
-	int endPos = lcu_height;
-
-	C0 = _mm256_set1_epi8(coef[0]);     // C0-C7: [-64, 63]
-	C1 = _mm256_set1_epi8(coef[1]);
-	C2 = _mm256_set1_epi8(coef[2]);
-	C3 = _mm256_set1_epi8(coef[3]);
-	C4 = _mm256_set1_epi8(coef[4]);
-	C5 = _mm256_set1_epi8(coef[5]);
-	C6 = _mm256_set1_epi8(coef[6]);
-	C7 = _mm256_set1_epi8(coef[7]);
-	C8 = _mm256_set1_epi32(coef[8]);    // [-1088, 1071]
-
-	mAddOffset = _mm256_set1_epi32(32);
-
-	for (i = startPos; i < endPos; i++)
-	{
-		imgPad1 = src + i_src;
-		imgPad1[0];
-		imgPad2 = src - i_src;
-		imgPad2[0];
-		imgPad3 = src + 2 * i_src;
-		imgPad4 = src - 2 * i_src;
-		imgPad5 = src + 3 * i_src;
-		imgPad6 = src - 3 * i_src;
-		if (i < 3)
-		{
-			if (i == 0)
-			{
-				imgPad4 = imgPad2 = src;
-			}
-			else if (i == 1)
-			{
-				imgPad4 = imgPad2;
-			}
-			imgPad6 = imgPad4;
-		}
-		else if (i > lcu_height - 4)
-		{
-			if (i == lcu_height - 1)
-			{
-				imgPad3 = imgPad1 = src;
-			}
-			else if (i == lcu_height - 2)
-			{
-				imgPad3 = imgPad1;
-			}
-			imgPad5 = imgPad3;
-		}
-
-		for (j = 0; (j + 31) < lcu_width; j += 32)
-		{
-			T00 = _mm256_loadu_si256((__m256i*) & imgPad6[j]);
-			T01 = _mm256_loadu_si256((__m256i*) & imgPad5[j]);
-			T000 = _mm256_unpacklo_epi8(T00, T01);
-			T001 = _mm256_unpackhi_epi8(T00, T01);
-			S00 = _mm256_maddubs_epi16(T000, C0);
-			S01 = _mm256_maddubs_epi16(T001, C0);
-
-			T10 = _mm256_loadu_si256((__m256i*) & imgPad4[j]);
-			T11 = _mm256_loadu_si256((__m256i*) & imgPad3[j]);
-			T100 = _mm256_unpacklo_epi8(T10, T11);
-			T101 = _mm256_unpackhi_epi8(T10, T11);
-			S10 = _mm256_maddubs_epi16(T100, C1);
-			S11 = _mm256_maddubs_epi16(T101, C1);
-
-			if (j < 1)
-				T20 = _mm256_loadu_si256((__m256i*) & imgPad2[0]);
-			else
-				T20 = _mm256_loadu_si256((__m256i*) & imgPad2[j - 1]);
-
-			T30 = _mm256_loadu_si256((__m256i*) & imgPad2[j]);
-			T40 = _mm256_loadu_si256((__m256i*) & imgPad2[j + 1]);
-			T41 = _mm256_loadu_si256((__m256i*) & imgPad1[j - 1]);
-			T31 = _mm256_loadu_si256((__m256i*) & imgPad1[j]);
-			T21 = _mm256_loadu_si256((__m256i*) & imgPad1[j + 1]);
-
-			T200 = _mm256_unpacklo_epi8(T20, T21);
-			T201 = _mm256_unpackhi_epi8(T20, T21);
-			T300 = _mm256_unpacklo_epi8(T30, T31);
-			T301 = _mm256_unpackhi_epi8(T30, T31);
-			T400 = _mm256_unpacklo_epi8(T40, T41);
-			T401 = _mm256_unpackhi_epi8(T40, T41);
-			S20 = _mm256_maddubs_epi16(T200, C2);
-			S21 = _mm256_maddubs_epi16(T201, C2);
-			S30 = _mm256_maddubs_epi16(T300, C3);
-			S31 = _mm256_maddubs_epi16(T301, C3);
-			S40 = _mm256_maddubs_epi16(T400, C4);
-			S41 = _mm256_maddubs_epi16(T401, C4);
-
-			if (j < 3)
-				T50 = _mm256_loadu_si256((__m256i*) & src[0]);
-			else
-				T50 = _mm256_loadu_si256((__m256i*) & src[j - 3]);
-
-			if (j < 2)
-				T60 = _mm256_loadu_si256((__m256i*) & src[0]);
-			else
-				T60 = _mm256_loadu_si256((__m256i*) & src[j - 2]);
-
-			if (j < 1)
-				T70 = _mm256_loadu_si256((__m256i*) & src[0]);
-			else
-				T70 = _mm256_loadu_si256((__m256i*) & src[j - 1]);
-
-			T8 = _mm256_loadu_si256((__m256i*) & src[j]);
-			T71 = _mm256_loadu_si256((__m256i*) & src[j + 1]);
-			T61 = _mm256_loadu_si256((__m256i*) & src[j + 2]);
-			T51 = _mm256_loadu_si256((__m256i*) & src[j + 3]);
-
-			m0 = _mm256_castsi256_si128(T8);
-			m1 = _mm256_extracti128_si256(T8, 1);
-
-			T80 = _mm256_cvtepu8_epi32(m0);
-			T81 = _mm256_cvtepu8_epi32(_mm_srli_si128(m0, 8));
-			T82 = _mm256_cvtepu8_epi32(m1);
-			T83 = _mm256_cvtepu8_epi32(_mm_srli_si128(m1, 8));
-			T80 = _mm256_mullo_epi32(T80, C8);
-			T81 = _mm256_mullo_epi32(T81, C8);
-			T82 = _mm256_mullo_epi32(T82, C8);
-			T83 = _mm256_mullo_epi32(T83, C8);
-
-			T500 = _mm256_unpacklo_epi8(T50, T51);
-			T501 = _mm256_unpackhi_epi8(T50, T51);
-			T600 = _mm256_unpacklo_epi8(T60, T61);
-			T601 = _mm256_unpackhi_epi8(T60, T61);
-			T700 = _mm256_unpacklo_epi8(T70, T71);
-			T701 = _mm256_unpackhi_epi8(T70, T71);
-			S50 = _mm256_maddubs_epi16(T500, C5);
-			S51 = _mm256_maddubs_epi16(T501, C5);
-			S60 = _mm256_maddubs_epi16(T600, C6);
-			S61 = _mm256_maddubs_epi16(T601, C6);
-			S70 = _mm256_maddubs_epi16(T700, C7);
-			S71 = _mm256_maddubs_epi16(T701, C7);
-
-			S0 = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(S00));
-			S1 = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(S10));
-			S2 = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(S20));
-			S3 = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(S30));
-			S4 = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(S40));
-			S5 = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(S50));
-			S6 = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(S60));
-			S7 = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(S70));
-			S0 = _mm256_add_epi32(S0, S1);
-			S2 = _mm256_add_epi32(S2, S3);
-			S4 = _mm256_add_epi32(S4, S5);
-			S6 = _mm256_add_epi32(S6, S7);
-			S0 = _mm256_add_epi32(S0, S2);
-			S4 = _mm256_add_epi32(S4, S6);
-			SS1 = _mm256_add_epi32(S0, S4);
-			SS1 = _mm256_add_epi32(SS1, T80);    //0-7
-
-			S0 = _mm256_cvtepi16_epi32(_mm256_extracti128_si256(S00, 1));
-			S1 = _mm256_cvtepi16_epi32(_mm256_extracti128_si256(S10, 1));
-			S2 = _mm256_cvtepi16_epi32(_mm256_extracti128_si256(S20, 1));
-			S3 = _mm256_cvtepi16_epi32(_mm256_extracti128_si256(S30, 1));
-			S4 = _mm256_cvtepi16_epi32(_mm256_extracti128_si256(S40, 1));
-			S5 = _mm256_cvtepi16_epi32(_mm256_extracti128_si256(S50, 1));
-			S6 = _mm256_cvtepi16_epi32(_mm256_extracti128_si256(S60, 1));
-			S7 = _mm256_cvtepi16_epi32(_mm256_extracti128_si256(S70, 1));
-			S0 = _mm256_add_epi32(S0, S1);
-			S2 = _mm256_add_epi32(S2, S3);
-			S4 = _mm256_add_epi32(S4, S5);
-			S6 = _mm256_add_epi32(S6, S7);
-			S0 = _mm256_add_epi32(S0, S2);
-			S4 = _mm256_add_epi32(S4, S6);
-			SS2 = _mm256_add_epi32(S0, S4);
-			SS2 = _mm256_add_epi32(SS2, T82);    //16-23
-
-			S0 = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(S01));
-			S1 = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(S11));
-			S2 = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(S21));
-			S3 = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(S31));
-			S4 = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(S41));
-			S5 = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(S51));
-			S6 = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(S61));
-			S7 = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(S71));
-			S0 = _mm256_add_epi32(S0, S1);
-			S2 = _mm256_add_epi32(S2, S3);
-			S4 = _mm256_add_epi32(S4, S5);
-			S6 = _mm256_add_epi32(S6, S7);
-			S0 = _mm256_add_epi32(S0, S2);
-			S4 = _mm256_add_epi32(S4, S6);
-			SS3 = _mm256_add_epi32(S0, S4);
-			SS3 = _mm256_add_epi32(SS3, T81);    //8-15
-
-			S0 = _mm256_cvtepi16_epi32(_mm256_extracti128_si256(S01, 1));
-			S1 = _mm256_cvtepi16_epi32(_mm256_extracti128_si256(S11, 1));
-			S2 = _mm256_cvtepi16_epi32(_mm256_extracti128_si256(S21, 1));
-			S3 = _mm256_cvtepi16_epi32(_mm256_extracti128_si256(S31, 1));
-			S4 = _mm256_cvtepi16_epi32(_mm256_extracti128_si256(S41, 1));
-			S5 = _mm256_cvtepi16_epi32(_mm256_extracti128_si256(S51, 1));
-			S6 = _mm256_cvtepi16_epi32(_mm256_extracti128_si256(S61, 1));
-			S7 = _mm256_cvtepi16_epi32(_mm256_extracti128_si256(S71, 1));
-			S0 = _mm256_add_epi32(S0, S1);
-			S2 = _mm256_add_epi32(S2, S3);
-			S4 = _mm256_add_epi32(S4, S5);
-			S6 = _mm256_add_epi32(S6, S7);
-			S0 = _mm256_add_epi32(S0, S2);
-			S4 = _mm256_add_epi32(S4, S6);
-			SS4 = _mm256_add_epi32(S0, S4);
-			SS4 = _mm256_add_epi32(SS4, T83);    //24-31
-
-			SS1 = _mm256_add_epi32(SS1, mAddOffset);
-			SS2 = _mm256_add_epi32(SS2, mAddOffset);
-			SS3 = _mm256_add_epi32(SS3, mAddOffset);
-			SS4 = _mm256_add_epi32(SS4, mAddOffset);
-
-			SS1 = _mm256_srai_epi32(SS1, 7);
-			SS2 = _mm256_srai_epi32(SS2, 7);
-			SS3 = _mm256_srai_epi32(SS3, 7);
-			SS4 = _mm256_srai_epi32(SS4, 7);
-
-			SS1 = _mm256_packs_epi32(SS1, SS2);
-			SS3 = _mm256_packs_epi32(SS3, SS4);
-			SS1 = _mm256_permute4x64_epi64(SS1, 0xd8);
-			SS3 = _mm256_permute4x64_epi64(SS3, 0xd8);
-
-			SS1 = _mm256_min_epi16(SS1, mMax);
-			SS1 = _mm256_max_epi16(SS1, mZero);
-			SS3 = _mm256_min_epi16(SS3, mMax);
-			SS3 = _mm256_max_epi16(SS3, mZero);
-
-			S = _mm256_packus_epi16(SS1, SS3);
-			_mm256_storeu_si256((__m256i*)(dst + j), S);
-		}
-
-		src += i_src;
-		dst += i_dst;
-	}
-}
-
-#else
-static void gaussian_filter(uint8_t* p_src, int width, int height, int stride, uint8_t* p_dst)
-{
-	const int       N = 7;
-	const double    sigma = 1.0;
-
-	int             i_stride = stride;
-	int             i_w = width;
-	int             i_h = height;
-	int             radius = N / 2;
-	double          d_sum = 0.0;
-	double* d_gauss = (double*)malloc(sizeof(double) * N * N);
-
-	//**** calculate the gaussian template d_gauss
-	for (int i = 0; i < N; i++)
-	{
-		for (int j = 0; j < N; j++)
-		{
-			double distance = (radius - i) * (radius - i) + (radius - j) * (radius - j);
-			double temp = exp((0 - distance) / (2 * sigma * sigma)) / 2 * PI_gaussian * sigma * sigma;
-			d_sum += temp;
-			d_gauss[i * N + j] = temp;
-		}
-	}
-	for (int i = 0; i < N; i++)
-	{
-		for (int j = 0; j < N; j++)
-		{
-			d_gauss[i * N + j] /= d_sum;
-		}
-	}
-	//**** guassian filter
-	for (int j = radius; j < i_h - radius; j++)
-	{
-		for (int i = radius; i < i_w - radius; i++)
-		{
-			double sum = 0.0;
-			int index = 0;
-			for (int m = j - radius; m <= j + radius; m++)
-			{
-				for (int n = i - radius; n <= i + radius; n++)
-				{
-					sum += p_src[m * i_stride + n] * d_gauss[index++];
-				}
-			}
-			if (sum > 255.0)
-				sum = 255.0;
-			if (sum < 0.0)
-				sum = 0.0;
-
-			p_dst[j * i_stride + i] = (uint8_t)sum;
-		}
-	}
-
-	free(d_gauss);
-}
-#endif
-
-*/
-
-
-// #if MedianFilter
-#if MedianFilter_uv
-
-static int median(int *window, int size)
-{
-    int i, j, tmp;
-    for (i = 0; i < size - 1; i++) {
-        for (j = i+1; j < size; j++) {
-            if (window[i] > window[j]) {
-                tmp = window[i];
-                window[i] = window[j];
-                window[j] = tmp;
-            }
-        }
-    }
-    return window[size/2];
-}
-
-static void median_filter(uint8_t *p_src, uint8_t *filtered, int width, int height, int stride, int radius)
-{
-    int i, j, k, l;
-    int index, count;
-    int *tmp = (int *)malloc(width * height * sizeof(int));
-    int *window = (int *)malloc((2 * radius + 1) * (2 * radius + 1) * sizeof(int));
-
-    for (i = 0; i < height; i++) {
-        for (j = 0; j < width; j++) {
-            count = 0;
-            for (k = - radius; k <= radius; k++) {
-                for (l = - radius; l <= radius; l++) {
-                    if ((i+k >= 0) && (i+k < height) && (j+l >= 0) && (j+l < width)) {
-                        index = (i+k) * stride + (j+l);
-                        window[count++] = p_src[index];
-                    }
-                }
-            }
-            tmp[i * stride + j] = median(window, count);
-			filtered[i * stride + j] = (uint8_t)tmp[i * stride + j];
-        }
-    }
-
-    free(tmp);
-    free(window);
-}
-
-#endif
 
 
 
@@ -5293,9 +4961,8 @@ int     x264_encoder_encode(x264_t* h,
 	//#define com_mfree(m)              if(m){free(m);}
 	//    com_mfree(h->fenc->m_iOffsetCtu);
 	//#endif
-
-
 	return encoder_frame_end(thread_oldest, thread_current, pp_nal, pi_nal, pic_out);
+	free(h->fenc->Jnd_arr);
 }
 
 static int encoder_frame_end(x264_t* h, x264_t* thread_current,
