@@ -353,8 +353,8 @@ REALIGN_STACK void x264_param_default( x264_param_t *param )
     param->JND1 = 0;
     param->HistogramEqualization1 = 0;
     param->HistogramEqualization1_STRENGTH = 2.0;
-    param->MedianFilter1 = 0;
-    param->MedianFilter1_STRENGTH = 0.1;
+    param->UV_GAUSSIAN1 = 0;
+    param->UV_GAUSSIAN1_STRENGTH = 1.2;
     param->GAMMA1 = 0;
 	
     /* CPU autodetect */
@@ -1376,11 +1376,11 @@ REALIGN_STACK int x264_param_parse( x264_param_t *p, const char *name, const cha
         p->HistogramEqualization1_STRENGTH = atof(value);
         printf("his-equ start,HistogramEqualization1_STRENGTH=%f\n",p->HistogramEqualization1_STRENGTH);
     }
-    OPT("median")
+    OPT("uv-gauss")
     {
-        p->MedianFilter1 = 1;
-        p->MedianFilter1_STRENGTH = atof(value);
-        printf("median start,MedianFilter1_STRENGTH=%f\n",p->MedianFilter1_STRENGTH);
+        p->UV_GAUSSIAN1 = 1;
+        p->UV_GAUSSIAN1_STRENGTH = atof(value);
+        printf("uv-gauss start,UV_GAUSSIAN1_STRENGTH=%f\n",p->UV_GAUSSIAN1_STRENGTH);
     }
     OPT("gamma-sa")
     {

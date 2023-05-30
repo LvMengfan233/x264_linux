@@ -1041,6 +1041,7 @@ static struct option long_options[] =
     { "his-equ",            required_argument,       NULL, 0 },
     { "median",             required_argument,       NULL, 0 },
     { "gamma-sa",           required_argument,       NULL, 0 },
+    { "uv-gauss",           required_argument,       NULL, 0 },
 
 
     { "profile",              required_argument, NULL, OPT_PROFILE },

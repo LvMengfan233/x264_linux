@@ -162,6 +162,7 @@ static const char * const opts_nosuggest[] =
     "--his-equ",
     "--median",
     "--gamma-sa",
+    "--uv-gauss",
     NULL
 };
 

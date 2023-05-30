@@ -3537,6 +3537,32 @@ static void gaussian_filter(uint8_t* p_src, int width, int height, int stride, u
 #endif
 
 #if UV_GAUSSIN
+static void gaussian_filter_data_clip(uint8_t* psrc, uint8_t* pdst,int width, int height, int stride, double ratio)
+{
+	int temp;
+	for (int i = 0; i < height; i++)
+	{
+		for (int j = 0; j < width; j++)
+		{
+			temp = psrc[i * stride + j] + ratio * psrc[i * stride + j] - ratio * pdst[i * stride + j];
+			if (temp > 255)
+			{
+				pdst[i * stride + j] = 255;
+			}
+			else if (temp < 0)
+			{
+				pdst[i * stride / 2 + j] = 0;
+			}
+			else
+			{
+				pdst[i * stride + j] = temp;
+			}
+
+		}
+	}
+}
+
+
 static void gaussian_filter_UV(uint8_t* p_src, int width, int height, int stride, uint8_t* p_dst)
 {
 	const int       N = 7;
@@ -3699,6 +3725,42 @@ static void CLHE(uint8_t *p_src, uint8_t *p_he, int width, int height, int strid
 
 
 #if gamma
+static double is_balance_histogram(uint8_t* p_src, int row, int col, int stride)
+{
+    int i = 0, j = 0, temp = 0;
+    int size = row * col;
+
+    //统计直方图每个灰度的像素值的累计数目
+    unsigned int hist[256] = { 0 };
+    for (i = 0; i < row; i++)
+    {
+        for (j = 0; j < col; j++)
+        {
+            temp = p_src[i * stride + j];
+            hist[temp]++;
+        }
+    }
+    
+    // 计算灰度像素均值
+    double mean = 0;
+    for (i = 0; i < 256; ++i) 
+    {
+        mean += i * hist[i];
+    }
+    mean = mean / (row*col);
+
+    // 计算方差
+    double var = 0;
+    for (i = 0; i < 256; ++i)
+    {
+        var += pow(i - mean, 2)*hist[i];
+    }
+    var = var / (row*col);
+
+    return var;
+}
+
+
 static void bilateralFilter(uint8_t* mask, int row, int col, int Window_D, float varD, float varR, int stride)
 {
     float w = 0; //卷积核
@@ -3773,48 +3835,54 @@ static void* slices_write(x264_t* h)
 		memcpy(p_gamma, h->fenc->plane[0], sizeof(uint8_t) * (h->fenc->i_stride[0] * h->param.i_height));
         memcpy(mask, h->fenc->plane[0], sizeof(uint8_t) * (h->fenc->i_stride[0] * h->param.i_height));
 
+		double var = is_balance_histogram(mask, h->param.i_height, h->param.i_width, h->fenc->i_stride[0]);
+        int need_gamma = var < 1000 | var > 4000;
+
 #if gamma			
-		int temp;
-		int size = h->param.i_width * h->param.i_height;
-		int sum = 0;
-		for (int i = 0; i < h->param.i_height; i++)
+		if (need_gamma) 
 		{
-			for (int j = 0; j < h->param.i_width; j++)
+			int temp;
+			int size = h->param.i_width * h->param.i_height;
+			int sum = 0;
+			for (int i = 0; i < h->param.i_height; i++)
 			{
-				sum += g_src[i * h->fenc->i_stride[0] + j];
+				for (int j = 0; j < h->param.i_width; j++)
+				{
+					sum += g_src[i * h->fenc->i_stride[0] + j];
+				}
 			}
-		}
-		int mean = sum / size; // 整体亮度均值
+			int mean = sum / size; // 整体亮度均值
 
-        bilateralFilter(mask, h->param.i_height, h->param.i_width, 3, 10, 10, h->fenc->i_stride[0]);
-        inverse_img(mask, h->param.i_height, h->param.i_width, h->fenc->i_stride[0]);
+			bilateralFilter(mask, h->param.i_height, h->param.i_width, 3, 10, 10, h->fenc->i_stride[0]);
+			inverse_img(mask, h->param.i_height, h->param.i_width, h->fenc->i_stride[0]);
 
-		for (int i = 0; i < h->param.i_height; i++)
-		{
-			for (int j = 0; j < h->param.i_width; j++)
+			for (int i = 0; i < h->param.i_height; i++)
 			{
-				float a = 1.0 * g_src[i*h->fenc->i_stride[0] + j] / 255;
-                float gam_power = (mean - mask[i*h->fenc->i_stride[0] + j]) / 128.0;
-                float gam_ratio = pow(2, gam_power); 
-
-				// float gam_ratio = 1.0 + 1.0 * (mean - 128) / 100000; // 待修改
-                
-				float s = pow(a, gam_ratio);
-				temp = floor(s*255+0.5);
-
-				if (temp > 255)
+				for (int j = 0; j < h->param.i_width; j++)
 				{
-					p_gamma[i * h->fenc->i_stride[0] + j] = 255;
-				}
-				else if (temp < 0)
-				{
-					p_gamma[i * h->fenc->i_stride[0] + j] = 0;
-				}
-				else
-				{
-					p_gamma[i * h->fenc->i_stride[0] + j] = temp;
-				}
+					float a = 1.0 * g_src[i*h->fenc->i_stride[0] + j] / 255;
+					float gam_power = (mean - mask[i*h->fenc->i_stride[0] + j]) / 128.0;
+					float gam_ratio = pow(2, gam_power); 
 
+					// float gam_ratio = 1.0 + 1.0 * (mean - 128) / 100000; // 待修改
+					
+					float s = pow(a, gam_ratio);
+					temp = floor(s*255+0.5);
+
+					if (temp > 255)
+					{
+						p_gamma[i * h->fenc->i_stride[0] + j] = 255;
+					}
+					else if (temp < 0)
+					{
+						p_gamma[i * h->fenc->i_stride[0] + j] = 0;
+					}
+					else
+					{
+						p_gamma[i * h->fenc->i_stride[0] + j] = temp;
+					}
+
+				}
 			}
 		}
 
@@ -3882,10 +3950,12 @@ static void* slices_write(x264_t* h)
 
 		for (int i = 0; i < h->param.i_height; i++)
 		{
+			// printf("\n");
 			for (int j = 0; j < h->param.i_width; j++)
 			{
 				// printf("i=%d,j=%d,psrc[i * h->fenc->i_stride[0] + j]=%d,pdst[i * h->fenc->i_stride[0] + j]=%d\n",i,j,psrc[i * h->fenc->i_stride[0] + j],pdst[i * h->fenc->i_stride[0] + j]);
 				temp = psrc[i * h->fenc->i_stride[0] + j] + ratio * psrc[i * h->fenc->i_stride[0] + j] - ratio * pdst[i * h->fenc->i_stride[0] + j];
+				// printf("%d,",psrc[i * h->fenc->i_stride[0] + j] - pdst[i * h->fenc->i_stride[0] + j]);
 				if (temp > 255)
 				{
 					pdst[i * h->fenc->i_stride[0] + j] = 255;
@@ -3908,97 +3978,59 @@ static void* slices_write(x264_t* h)
 
 	}
 
-//=============================================================高斯滤波 UV分量			
+//=============================================================高斯滤波 UV分量		
+	if (h->param.UV_GAUSSIAN1 == 1) //調用函數
+	{	
 #if UV_GAUSSIN 
-	if( (h->fenc->i_stride[1]==h->fenc->i_stride[2]) && (h->fenc->i_stride[2]!=0) )
-	{
-		for (int m = 1; m < 3;m++)
-		{
-			uint8_t *psrc_uv = h->fenc->plane[m];
-			// uint8_t* pdst = (uint8_t*)malloc(sizeof(uint8_t) * (h->fenc->i_stride[m] * h->param.i_height / 2));
-			uint8_t* ptmp_uv = (uint8_t*)malloc(sizeof(uint8_t) * (h->fenc->i_stride[m] * h->param.i_height / 2));
-			// memcpy(pdst, h->fenc->plane[m], sizeof(uint8_t) * (h->fenc->i_stride[m] * h->param.i_height / 2));
-			memcpy(ptmp_uv, h->fenc->plane[m], sizeof(uint8_t) * (h->fenc->i_stride[m] * h->param.i_height / 2));
-#if gaussian_new_avx2
-			init_gauss_coeff(g_gauss_coeff);
-			gaussian_filter_avx2(ptmp_uv, h->fenc->i_stride[m], psrc_uv, h->fenc->i_stride[m], g_gauss_coeff, h->fenc->i_stride[m], h->param.i_height / 2);
-			// init_gauss_coeff(g_gauss_coeff);
-			// gaussian_filter_avx2(pdst, h->fenc->i_stride[m], ptmp, h->fenc->i_stride[m], g_gauss_coeff, h->fenc->i_stride[m], h->param.i_height / 2);
-#else
-			gaussian_filter(psrc_uv, h->param.i_width / 2, h->param.i_height / 2 , h->fenc->i_stride[m], ptmp_uv);
-			// gaussian_filter(ptmp, h->param.i_width / 2, h->param.i_height / 2 , h->fenc->i_stride[m], pdst);
-#endif
-
-			int temp;
-			double ratio = 0.7;
-
-			for (int i = 0; i < h->param.i_height / 2; i++)
-			{
-				for (int j = 0; j < h->fenc->i_stride[m] ; j++)
-				{
-					temp = psrc_uv[i * h->fenc->i_stride[m] + j] + ratio * psrc_uv[i * h->fenc->i_stride[m] + j] - ratio * ptmp_uv[i * h->fenc->i_stride[m] + j];
-
-					if (temp > 255)
-					{
-						ptmp_uv[i * h->fenc->i_stride[m] + j] = 255;
-					}
-					else if (temp < 0)
-					{
-						ptmp_uv[i * h->fenc->i_stride[m] + j] = 0;
-					}
-					else
-					{
-						ptmp_uv[i * h->fenc->i_stride[m] + j] = temp;
-					}
-
-				}
-			}
-
-			memcpy(h->fenc->plane[m], ptmp_uv, sizeof(uint8_t) * (h->fenc->i_stride[m] * h->param.i_height / 2));
-
-			free(ptmp_uv);
-
-		}
-	}
-	else{
-		//*********************************************************************************************************UV隔列存储
 		uint8_t *psrc_uv = h->fenc->plane[1];
-		uint8_t* ptmp_uv = (uint8_t*)malloc(sizeof(uint8_t) * (h->fenc->i_stride[1] * h->param.i_height / 2));
-		memcpy(ptmp_uv, h->fenc->plane[1], sizeof(uint8_t) * (h->fenc->i_stride[1] * h->param.i_height / 2));
-
-		gaussian_filter_UV(psrc_uv, h->param.i_width / 2, h->param.i_height / 2 , h->fenc->i_stride[1], ptmp_uv);
-
-		int temp;
-		double ratio = 1.5;
-
-		for (int i = 0; i < h->param.i_height / 2; i++)
-		{
-			for (int j = 0; j < h->param.i_width / 2 ; j++)
-			{
-				temp = psrc_uv[i * h->fenc->i_stride[1] + j] + ratio * psrc_uv[i * h->fenc->i_stride[1] + j] - ratio * ptmp_uv[i * h->fenc->i_stride[1] + j];
-
-				if (temp > 255)
-				{
-					ptmp_uv[i * h->fenc->i_stride[1] + j] = 255;
-				}
-				else if (temp < 0)
-				{
-					ptmp_uv[i * h->fenc->i_stride[1] + j] = 0;
-				}
-				else
-				{
-					ptmp_uv[i * h->fenc->i_stride[1] + j] = temp;
-				}
-
+		uint8_t* psrc_u = (uint8_t*)malloc(sizeof(uint8_t) * (h->param.i_width * h->param.i_height / 4));
+		uint8_t* psrc_v = (uint8_t*)malloc(sizeof(uint8_t) * (h->param.i_width * h->param.i_height / 4));
+		uint8_t* ptmp_u = (uint8_t*)malloc(sizeof(uint8_t) * (h->param.i_width * h->param.i_height / 4));
+		uint8_t* ptmp_v = (uint8_t*)malloc(sizeof(uint8_t) * (h->param.i_width * h->param.i_height / 4));
+		//将原始UV分量分成两个内存空间
+		for (int y = 0; y < h->param.i_height / 2; y++){
+			for (int x = 0; x < h->param.i_width / 2; x++){
+				psrc_u[x + y * h->param.i_width / 2] = psrc_uv[2 * x + y * h->fenc->i_stride[1]];//U分量
+				psrc_v[x + y * h->param.i_width / 2] = psrc_uv[2 * x + 1 + y * h->fenc->i_stride[1]];//V分量
 			}
 		}
+		
 
-		memcpy(h->fenc->plane[1], ptmp_uv, sizeof(uint8_t) * (h->fenc->i_stride[1] * h->param.i_height / 2));
-
-		free(ptmp_uv);
-	}
-			
+		//对UV分量分别执行高斯滤波
+#if gaussian_new_avx2
+		init_gauss_coeff(g_gauss_coeff);
+		gaussian_filter_avx2(ptmp_u, h->param.i_width / 2, psrc_u, h->param.i_width / 2, g_gauss_coeff, h->param.i_width / 2, h->param.i_height / 2);
+		init_gauss_coeff(g_gauss_coeff);
+		gaussian_filter_avx2(ptmp_v, h->param.i_width / 2, psrc_v, h->param.i_width / 2, g_gauss_coeff, h->param.i_width / 2, h->param.i_height / 2);
+#else
+		gaussian_filter(psrc_u, h->param.i_width / 2, h->param.i_height / 2 , h->param.i_width / 2, ptmp_u);
+		gaussian_filter(psrc_v, h->param.i_width / 2, h->param.i_height / 2 , h->param.i_width / 2, ptmp_v);
+					
 #endif
+		double ratio = (double)h->param.UV_GAUSSIAN1_STRENGTH;
+		gaussian_filter_data_clip(psrc_u, ptmp_u, h->param.i_width / 2, h->param.i_height / 2, h->param.i_width / 2, ratio);
+		gaussian_filter_data_clip(psrc_v, ptmp_v, h->param.i_width / 2, h->param.i_height / 2, h->param.i_width / 2, ratio);
+
+		
+		for (int y = 0; y < h->param.i_height / 2; y++)
+		{
+			for (int x = 0; x < h->param.i_width / 2; x++){
+				if(abs(psrc_uv[2 * x + y * h->fenc->i_stride[1]] - ptmp_u[x + y * h->param.i_width / 2]) < 10){
+					psrc_uv[2 * x + y * h->fenc->i_stride[1]] = ptmp_u[x + y * h->param.i_width / 2];     //U分量
+				}
+				if(abs(psrc_uv[2 * x + 1 + y * h->fenc->i_stride[1]] - ptmp_v[x + y * h->param.i_width / 2]) < 10){
+					psrc_uv[2 * x + 1 + y * h->fenc->i_stride[1]] = ptmp_v[x + y * h->param.i_width / 2]; //V分量
+				}
+				
+			}
+		}
+		free(ptmp_u);
+		free(ptmp_v);
+		free(psrc_u);
+		free(psrc_v);
+
+#endif
+	}
 
 
 

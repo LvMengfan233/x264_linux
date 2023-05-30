@@ -124,7 +124,7 @@ typedef struct ssimquant_t
 #define HistogramEqualization 0 //直方图均衡化提升对比度
 
 #define GAUSSIAN_CLIP         1 //对高斯滤波提取出的高频信息进行限制，以解决白点问题。
-#define UV_GAUSSIN            0 //对色度分量进行高斯滤波
+#define UV_GAUSSIN            1 //对色度分量进行高斯滤波
 
 #define gamma                 1  //gamma校正
 //以下三个宏只能开一个
@@ -690,8 +690,8 @@ typedef struct x264_param_t
     int JND1;
     int HistogramEqualization1;
     float HistogramEqualization1_STRENGTH;
-    int MedianFilter1;
-    float MedianFilter1_STRENGTH;
+    int UV_GAUSSIAN1;
+    float UV_GAUSSIAN1_STRENGTH ;
     int GAMMA1;
 	
 } x264_param_t;
