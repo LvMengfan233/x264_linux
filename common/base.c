@@ -354,7 +354,7 @@ REALIGN_STACK void x264_param_default( x264_param_t *param )
     param->HistogramEqualization1 = 0;
     param->HistogramEqualization1_STRENGTH = 2.0;
     param->UV_GAUSSIAN1 = 0;
-    param->UV_GAUSSIAN1_STRENGTH = 1.2;
+    param->UV_GAUSSIAN1_STRENGTH = 1.3;
     param->GAMMA1 = 0;
 	
     /* CPU autodetect */

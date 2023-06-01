@@ -135,7 +135,18 @@ typedef struct ssimquant_t
 #define MedianFilter          0 //中值滤波
 #define MedianFilter_uv       0
 
+
+
+#define GAUSSIAN_ADJ    1
+#define GAUSSIAN_SIZE   8
+
+#define GAUSSIAN_VARIANCE    1
+#define GAUSSIAN_LAPLACE     1
+#define GAUSSIAN_GAUSSIAN    0 //这三个宏只能同时开一个
+
 #define GAUSSIAN_ADAPTIVE    0 //自适应获取阈值
+
+#define BLOCK_TEST           1
 
 
 

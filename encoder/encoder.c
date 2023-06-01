@@ -3536,6 +3536,75 @@ static void gaussian_filter(uint8_t* p_src, int width, int height, int stride, u
 }
 #endif
 
+#if GAUSSIAN_VARIANCE
+static void gaussian_variance(uint8_t *p_src,  int stride, int idx, float *dst) 
+{
+	float sum = 0;
+	float variance = 0;
+	for (int i = 0; i < GAUSSIAN_SIZE; i++) //(i,j)
+	{
+		for (int j = 0; j < GAUSSIAN_SIZE;j++)
+		{
+			sum += p_src[j * stride + i];
+		}
+	}
+	sum /= (float)GAUSSIAN_SIZE * GAUSSIAN_SIZE;
+	for (int i = 0; i < GAUSSIAN_SIZE; i++) //(i,j)
+	{
+		for (int j = 0; j < GAUSSIAN_SIZE;j++)
+		{
+			variance += (p_src[j * stride + i] - sum) * (p_src[j * stride + i] - sum);
+		}
+	}
+	dst[idx] = variance;
+}
+#endif
+
+#if GAUSSIAN_LAPLACE
+static void gaussian_laplace(uint8_t *p_src,  int stride, int idx, float *dst) 
+{
+	float sum = 0;
+	// float variance = 0;
+	for (int i = 1; i < GAUSSIAN_SIZE-1; i++) //(i,j)
+	{
+		for (int j = 1; j < GAUSSIAN_SIZE-1;j++)
+		{
+			int x = j * stride + i;
+			int srcStride = stride;
+			sum += abs(12 * p_src[x] - 2 * (p_src[x - 1] + p_src[x + 1] + p_src[x - srcStride] + p_src[x + srcStride]) - p_src[x - 1 - srcStride] - p_src[x + 1 - srcStride] - p_src[x - 1 + srcStride] - p_src[x + 1 + srcStride]);
+			//    [-1,-2,-1
+			//     -2,12,-2
+			//     -1,-2,-1] laplace operator
+		}
+	}
+	dst[idx] = abs(sum);
+}
+#endif
+
+
+#if GAUSSIAN_GAUSSIAN
+static void gaussian_gaussian(uint8_t *p_src,  int stride, int idx, float *dst) 
+{
+	float sum = 0;
+	// float variance = 0;
+	for (int i = 1; i < GAUSSIAN_SIZE-1; i++) //(i,j)
+	{
+		for (int j = 1; j < GAUSSIAN_SIZE-1;j++)
+		{
+			int x = j * stride + i;
+			int srcStride = stride;
+			sum += abs(4 * p_src[x] + 2 * (p_src[x - 1] + p_src[x + 1] + p_src[x - srcStride] + p_src[x + srcStride]) + p_src[x - 1 - srcStride] + p_src[x + 1 - srcStride] + p_src[x - 1 + srcStride] + p_src[x + 1 + srcStride]);
+			// (1/16) * [1,2,1
+			//           2,4,2
+			//           1,2,1] gaussian operator
+		}
+	}
+	dst[idx] = abs(sum / 16.0);
+	
+}
+
+#endif
+
 #if UV_GAUSSIN
 static void gaussian_filter_data_clip(uint8_t* psrc, uint8_t* pdst,int width, int height, int stride, double ratio)
 {
@@ -3639,7 +3708,7 @@ static void gaussian_filter_UV(uint8_t* p_src, int width, int height, int stride
 		for (int i = 2 * radius + 1; i < i_w - 2 * radius + 1; i+=2)
 		{
 			double sum_V = 0.0;
-			int index_V = 0;
+			int index_V = 1;  //V的高斯核从1开始
 			for (int m = j - radius; m <= j + radius; m++)
 			{
 				for (int n = i - 2 * radius; n <= i + 2 * radius; n+=2)
@@ -3912,6 +3981,63 @@ static void* slices_write(x264_t* h)
 
 
 //=============================================================高斯滤波 Y分量
+//插入4x4的gaussian
+#if GAUSSIAN_ADJ 
+		int gaussian_width = h->param.i_width / GAUSSIAN_SIZE;
+    	int gaussian_height = h->param.i_height / GAUSSIAN_SIZE;
+		float *f_variance_coeff = (float *)malloc((gaussian_width * gaussian_height) * sizeof(float));
+		float *f_laplace_coeff = (float *)malloc((gaussian_width * gaussian_height) * sizeof(float));
+	
+		for (int gaussian_block_y = 0; gaussian_block_y < gaussian_height; gaussian_block_y++)
+		{
+			// printf("\n");
+        	for (int gaussian_block_x = 0; gaussian_block_x < gaussian_width; gaussian_block_x++)
+        	{
+            	int gaussian_block_index = gaussian_block_x + gaussian_block_y * gaussian_width;
+				uint8_t *p_src = h->fenc->plane[0];
+				p_src += (gaussian_block_y * GAUSSIAN_SIZE * h->fenc->i_stride[0] + gaussian_block_x * GAUSSIAN_SIZE);
+
+#if GAUSSIAN_VARIANCE				
+				gaussian_variance(p_src, h->fenc->i_stride[0], gaussian_block_index, f_variance_coeff);//使用方差
+				//printf("%d高斯块的均方差=%f\n", gaussian_block_index, f_gaussian_coeff[gaussian_block_index]);
+				//printf("%f,", f_variance_coeff[gaussian_block_index]);
+#endif
+
+#if GAUSSIAN_LAPLACE	//100  300			
+				gaussian_laplace(p_src, h->fenc->i_stride[0], gaussian_block_index, f_laplace_coeff);//使用方差
+				//printf("%d高斯块的laplace=%f\n", gaussian_block_index, f_gaussian_coeff[gaussian_block_index]);
+				// printf("%f,", f_laplace_coeff[gaussian_block_index]);
+#endif
+
+#if GAUSSIAN_GAUSSIAN   //200   500		
+				gaussian_gaussian(p_src, h->fenc->i_stride[0], gaussian_block_index, f_gaussian_coeff);//使用方差
+				//printf("%d高斯块的gaussian=%f\n", gaussian_block_index, f_gaussian_coeff[gaussian_block_index]);
+				//printf("%f,", f_gaussian_coeff[gaussian_block_index]);
+#endif
+			
+			}
+		}
+
+#if GAUSSIAN_ADAPTIVE
+		float coeff_max = f_gaussian_coeff[1];
+		float coeff_min = f_gaussian_coeff[1];
+		for (int i = 0; i < gaussian_width * gaussian_height;i++)
+		{
+			if(f_gaussian_coeff[i] > coeff_max)
+			{
+				coeff_max = f_gaussian_coeff[i];
+			}
+			if (f_gaussian_coeff[i] < coeff_min)
+			{
+				coeff_min = f_gaussian_coeff[i];
+			}
+		}
+
+#endif
+
+#endif
+
+
 	if (h->param.GAUSSIAN1 == 1) //調用函數
 	{
 		// 对亮度分量进行高斯滤波
@@ -3948,6 +4074,51 @@ static void* slices_write(x264_t* h)
 		int temp;
 		double ratio = (double)h->param.GAUSSIAN1_STRENGTH;
 
+
+#if BLOCK_TEST
+		for (int i = 0; i < h->param.i_height; i++)
+		{
+			//printf("\n");
+			for (int j = 0; j < h->param.i_width; j++)
+			{
+				temp = psrc[i * h->fenc->i_stride[0] + j] + ratio * psrc[i * h->fenc->i_stride[0] + j] - ratio * pdst[i * h->fenc->i_stride[0] + j];
+				//printf("%d,", psrc[i * pic_in->img.i_stride[0] + j] - pdst[i * pic_in->img.i_stride[0] + j]);
+
+#if GAUSSIAN_ADJ 
+				//在这里判断应该高斯平滑还是高斯增强
+				int gaussian_block_y = i / GAUSSIAN_SIZE;//i是高
+				int gaussian_block_x = j / GAUSSIAN_SIZE;//j是宽
+
+				int gaussian_block_index = gaussian_block_x + gaussian_block_y * gaussian_width;
+
+				if (f_variance_coeff[i] <= 20000)
+				{	
+					temp = psrc[i * h->fenc->i_stride[0] + j] + ratio * (psrc[i * h->fenc->i_stride[0] + j] - pdst[i * h->fenc->i_stride[0] + j]);
+				}
+				else
+				{
+					temp = pdst[i * h->fenc->i_stride[0] + j];
+				}
+
+#endif
+
+				if (temp > 255)
+				{
+					pdst[i * h->fenc->i_stride[0] + j] = 255;
+				}
+				else if (temp < 0)
+				{
+					pdst[i * h->fenc->i_stride[0] + j] = 0;
+				}
+				else
+				{
+					pdst[i * h->fenc->i_stride[0] + j] = temp;
+				}
+			}
+		}
+
+#else
+
 		for (int i = 0; i < h->param.i_height; i++)
 		{
 			// printf("\n");
@@ -3971,12 +4142,15 @@ static void* slices_write(x264_t* h)
 			}
 		}
 
+#endif
+
 		memcpy(h->fenc->plane[0], pdst, sizeof(uint8_t) * (h->fenc->i_stride[0] * h->param.i_height));
 
 		free(ptmp);
 		free(pdst);
 
 	}
+
 
 //=============================================================高斯滤波 UV分量		
 	if (h->param.UV_GAUSSIAN1 == 1) //調用函數
@@ -4002,7 +4176,7 @@ static void* slices_write(x264_t* h)
 	#endif
 
 				int temp;
-				double ratio = 0.7;
+				double ratio = (double)h->param.UV_GAUSSIAN1_STRENGTH;
 
 				for (int i = 0; i < h->param.i_height / 2; i++)
 				{
@@ -4041,7 +4215,8 @@ static void* slices_write(x264_t* h)
 			gaussian_filter_UV(psrc_uv, h->param.i_width / 2, h->param.i_height / 2 , h->fenc->i_stride[1], ptmp_uv);
 
 			int temp;
-			double ratio = 1.5;
+			double ratio = (double)h->param.UV_GAUSSIAN1_STRENGTH;   //参数没传进来
+			// printf("ratio=%d\n",ratio);
 
 			for (int i = 0; i < h->param.i_height / 2; i++)
 			{
