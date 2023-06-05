@@ -127,15 +127,6 @@ typedef struct ssimquant_t
 #define UV_GAUSSIN            1 //对色度分量进行高斯滤波
 
 #define gamma                 1  //gamma校正
-//以下三个宏只能开一个
-#define gamma_uv              0
-#define gamma_u               0
-#define gamma_v               0
-
-#define MedianFilter          0 //中值滤波
-#define MedianFilter_uv       0
-
-#define GAUSSIAN_ADAPTIVE    0 //自适应获取阈值
 
 
 

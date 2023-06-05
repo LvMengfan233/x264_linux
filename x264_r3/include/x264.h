@@ -123,17 +123,10 @@ typedef struct ssimquant_t
 //=======================================
 #define HistogramEqualization 0 //直方图均衡化提升对比度
 
-#define GAUSSIAN_CLIP         1 //对高斯滤波提取出的高频信息进行限制，以解决白点问题。
+#define GAUSSIAN_CLIP         1 //对高斯滤波提取出的高频信息进行限制，以解决白点问题
 #define UV_GAUSSIN            1 //对色度分量进行高斯滤波
 
 #define gamma                 1  //gamma校正
-//以下三个宏只能开一个
-#define gamma_uv              0
-#define gamma_u               0
-#define gamma_v               0
-
-#define MedianFilter          0 //中值滤波
-#define MedianFilter_uv       0
 
 
 

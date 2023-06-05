@@ -3639,7 +3639,7 @@ static void gaussian_filter_UV(uint8_t* p_src, int width, int height, int stride
 		for (int i = 2 * radius + 1; i < i_w - 2 * radius + 1; i+=2)
 		{
 			double sum_V = 0.0;
-			int index_V = 0;
+			int index_V = 1;
 			for (int m = j - radius; m <= j + radius; m++)
 			{
 				for (int n = i - 2 * radius; n <= i + 2 * radius; n+=2)
@@ -3836,7 +3836,7 @@ static void* slices_write(x264_t* h)
         memcpy(mask, h->fenc->plane[0], sizeof(uint8_t) * (h->fenc->i_stride[0] * h->param.i_height));
 
 		double var = is_balance_histogram(mask, h->param.i_height, h->param.i_width, h->fenc->i_stride[0]);
-        int need_gamma = var < 1000 | var > 4000;
+        int need_gamma = var < 1000 | var > 5000;
 
 #if gamma			
 		if (need_gamma) 
@@ -3853,7 +3853,7 @@ static void* slices_write(x264_t* h)
 			}
 			int mean = sum / size; // 整体亮度均值
 
-			bilateralFilter(mask, h->param.i_height, h->param.i_width, 3, 10, 10, h->fenc->i_stride[0]);
+			bilateralFilter(mask, h->param.i_height, h->param.i_width, 3, 50, 50, h->fenc->i_stride[0]);
 			inverse_img(mask, h->param.i_height, h->param.i_width, h->fenc->i_stride[0]);
 
 			for (int i = 0; i < h->param.i_height; i++)
@@ -3861,7 +3861,8 @@ static void* slices_write(x264_t* h)
 				for (int j = 0; j < h->param.i_width; j++)
 				{
 					float a = 1.0 * g_src[i*h->fenc->i_stride[0] + j] / 255;
-					float gam_power = (mean - mask[i*h->fenc->i_stride[0] + j]) / 128.0;
+                    float alpha = var < 1000 ? 0.9 : 0.25;
+					float gam_power = alpha * (mean - mask[i*h->fenc->i_stride[0] + j]) / 128.0;
 					float gam_ratio = pow(2, gam_power); 
 
 					// float gam_ratio = 1.0 + 1.0 * (mean - 128) / 100000; // 待修改
@@ -4002,7 +4003,7 @@ static void* slices_write(x264_t* h)
 	#endif
 
 				int temp;
-				double ratio = 0.7;
+				double ratio = (double)h->param.UV_GAUSSIAN1_STRENGTH;
 
 				for (int i = 0; i < h->param.i_height / 2; i++)
 				{
@@ -4041,7 +4042,7 @@ static void* slices_write(x264_t* h)
 			gaussian_filter_UV(psrc_uv, h->param.i_width / 2, h->param.i_height / 2 , h->fenc->i_stride[1], ptmp_uv);
 
 			int temp;
-			double ratio = 1.5;
+			double ratio = (double)h->param.UV_GAUSSIAN1_STRENGTH;
 
 			for (int i = 0; i < h->param.i_height / 2; i++)
 			{
