@@ -3853,15 +3853,22 @@ static void* slices_write(x264_t* h)
 			}
 			int mean = sum / size; // 整体亮度均值
 
-			bilateralFilter(mask, h->param.i_height, h->param.i_width, 3, 50, 50, h->fenc->i_stride[0]);
+			// bilateralFilter(mask, h->param.i_height, h->param.i_width, 3, 50, 50, h->fenc->i_stride[0]);
 			inverse_img(mask, h->param.i_height, h->param.i_width, h->fenc->i_stride[0]);
-
-			for (int i = 0; i < h->param.i_height; i++)
+            
+#if gaussian_new_avx2
+            init_gauss_coeff(g_gauss_coeff);
+            gaussian_filter_avx2(mask, h->fenc->i_stride[0], g_src, h->fenc->i_stride[0], g_gauss_coeff, h->param.i_width, h->param.i_height);
+#else
+            gaussian_filter(g_src, h->param.i_width, h->param.i_height, h->fenc->i_stride[0], mask);
+#endif
+            
+			for (int i = 16; i < h->param.i_height-16; i++)
 			{
-				for (int j = 0; j < h->param.i_width; j++)
+				for (int j = 16; j < h->param.i_width-16; j++)
 				{
 					float a = 1.0 * g_src[i*h->fenc->i_stride[0] + j] / 255;
-                    float alpha = var < 1000 ? 0.9 : 0.25;
+                    float alpha = var < 1000 ? 0.80 : 0.20;
 					float gam_power = alpha * (mean - mask[i*h->fenc->i_stride[0] + j]) / 128.0;
 					float gam_ratio = pow(2, gam_power); 
 
