@@ -637,7 +637,7 @@ static int validate_parameters(x264_t* h, int b_open)
 	}
 	if (h->param.i_frame_packing == 7 &&
 		((h->param.i_width - h->param.crop_rect.i_left - h->param.crop_rect.i_right) % 3 ||
-			(h->param.i_height - h->param.crop_rect.i_top - h->param.crop_rect.i_bottom) % 3))
+		(h->param.i_height - h->param.crop_rect.i_top - h->param.crop_rect.i_bottom) % 3))
 	{
 		x264_log(h, X264_LOG_ERROR, "cropped resolution %dx%d not compatible with tile format frame packing\n",
 			h->param.i_width - h->param.crop_rect.i_left - h->param.crop_rect.i_right,
@@ -1520,7 +1520,7 @@ static void set_aspect_ratio(x264_t* h, x264_param_t* param, int initial)
 x264_t* x264_encoder_open(x264_param_t* param, void* api)
 {
 	x264_t* h;
-	char buf[1000], * p;
+	char buf[1000], *p;
 	int i_slicetype_length;
 
 	CHECKED_MALLOCZERO(h, sizeof(x264_t));
@@ -2509,16 +2509,16 @@ static void fdec_filter_row(x264_t* h, int mb_y, int pass)
 		if (h->param.analyse.b_psnr)
 		{
 			for (int p = 0; p < (CHROMA444 ? 3 : 1); p++)
-				h->stat.frame.i_ssd[p] += x264_pixel_ssd_wxh( &h->pixf,
+				h->stat.frame.i_ssd[p] += x264_pixel_ssd_wxh(&h->pixf,
 					h->fdec->plane[p] + minpix_y * h->fdec->i_stride[p], h->fdec->i_stride[p],
 					h->fenc->plane[p] + minpix_y * h->fenc->i_stride[p], h->fenc->i_stride[p],
-					h->param.i_width, maxpix_y-minpix_y );
-				
-				/*h->stat.frame.i_ssd[p] += x264_pixel_ssd_wxh(&h->pixf,
-					h->fdec->plane[p] + minpix_y * h->fdec->i_stride[p], h->fdec->i_stride[p],
-					h->fenc->plane[p] + minpix_y * h->fenc->i_stride[p], h->fenc->i_stride[p],
-					h->param.i_width, maxpix_y - minpix_y);*/
-				
+					h->param.i_width, maxpix_y - minpix_y);
+
+			/*h->stat.frame.i_ssd[p] += x264_pixel_ssd_wxh(&h->pixf,
+				h->fdec->plane[p] + minpix_y * h->fdec->i_stride[p], h->fdec->i_stride[p],
+				h->fenc->plane[p] + minpix_y * h->fenc->i_stride[p], h->fenc->i_stride[p],
+				h->param.i_width, maxpix_y - minpix_y);*/
+
 
 			if (!CHROMA444)
 			{
@@ -3196,11 +3196,11 @@ static void thread_sync_stat(x264_t* dst, x264_t* src)
 
 static int g_gauss_coeff[9] = { 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 
-static void init_gauss_coeff(int* coef)
+static void init_gauss_coeff(int* coef, double sigma)
 {
 	//**** calculate the gaussian template d_gauss
 	const int       N = 7;
-	const double    sigma = 1.0;
+	//double    sigma = 1.0;
 
 	int             radius = N / 2;
 	double          d_sum = 0;
@@ -3233,7 +3233,7 @@ static void init_gauss_coeff(int* coef)
 
 static void gaussian_filter_avx2(uint8_t* dst, int i_dst, uint8_t* src, int i_src, int* coef, int lcu_width, int lcu_height)
 {
-	int8_t* imgPad1, * imgPad2, * imgPad3, * imgPad4, * imgPad5, * imgPad6;
+	int8_t* imgPad1, *imgPad2, *imgPad3, *imgPad4, *imgPad5, *imgPad6;
 
 	__m256i T00, T01, T10, T11, T20, T21, T30, T31, T40, T41, T50, T51, T60, T61, T70, T71, T80, T81, T82, T83;
 	__m256i T8;
@@ -3478,6 +3478,65 @@ static void gaussian_filter_avx2(uint8_t* dst, int i_dst, uint8_t* src, int i_sr
 	}
 }
 
+static void gaussian_filter_end(uint8_t* p_src, int width, int height, int stride, int start, uint8_t* p_dst)
+{
+	const int       N = 7;
+	const double    sigma = 1.0;
+
+	int             i_stride = stride;
+	int             i_w = width;
+	int             i_h = height;
+	int             radius = N / 2;
+	double          d_sum = 0.0;
+	double* d_gauss = (double*)malloc(sizeof(double) * N * N);
+
+	//**** calculate the gaussian template d_gauss
+	for (int i = 0; i < N; i++)
+	{
+		for (int j = 0; j < N; j++)
+		{
+			double distance = (radius - i) * (radius - i) + (radius - j) * (radius - j);
+			double temp = exp((0 - distance) / (2 * sigma * sigma)) / 2 * PI_gaussian * sigma * sigma;
+			d_sum += temp;
+			d_gauss[i * N + j] = temp;
+		}
+	}
+	for (int i = 0; i < N; i++)
+	{
+		for (int j = 0; j < N; j++)
+		{
+			d_gauss[i * N + j] /= d_sum;
+		}
+	}
+	//**** guassian filter
+	for (int j = radius; j < i_h - radius; j++)
+	{
+		for (int i = i_w - start - radius; i < i_w - radius; i++)
+		{
+			double sum = 0.0;
+			int index = 0;
+			for (int m = j - radius; m <= j + radius; m++)
+			{
+				for (int n = i - radius; n <= i + radius; n++)
+				{
+					sum += p_src[m * i_stride + n] * d_gauss[index++];
+				}
+			}
+			if (sum > 255.0)
+				sum = 255.0;
+			if (sum < 0.0)
+				sum = 0.0;
+
+			p_dst[j * i_stride + i] = (uint8_t)sum;
+		}
+	}
+
+	free(d_gauss);
+}
+
+
+
+
 #else
 static void gaussian_filter(uint8_t* p_src, int width, int height, int stride, uint8_t* p_dst)
 {
@@ -3537,7 +3596,7 @@ static void gaussian_filter(uint8_t* p_src, int width, int height, int stride, u
 #endif
 
 #if UV_GAUSSIN
-static void gaussian_filter_data_clip(uint8_t* psrc, uint8_t* pdst,int width, int height, int stride, double ratio)
+static void gaussian_filter_data_clip(uint8_t* psrc, uint8_t* pdst, int width, int height, int stride, double ratio)
 {
 	int temp;
 	for (int i = 0; i < height; i++)
@@ -3563,10 +3622,30 @@ static void gaussian_filter_data_clip(uint8_t* psrc, uint8_t* pdst,int width, in
 }
 
 
-static void gaussian_filter_UV(uint8_t* p_src, int width, int height, int stride, uint8_t* p_dst)
+static void gaussian_filter_UV(uint8_t* p_src, int width, int height, int stride, uint8_t* p_dst, double var_u, double var_v)
 {
 	const int       N = 7;
-	const double    sigma = 1.0;
+	double    sigma_u = 1.0;
+	double    sigma_v = 1.0;
+
+	// if (var_u <= 20) 
+	// {
+	// 	sigma_u = 1.2;
+	// }
+	// else if (var_u < 100 && var_u > 20)
+	// {
+	// 	sigma_u = 1.1;
+	// }
+
+
+	// if (var_v <= 20) 
+	// {
+	// 	sigma_v = 1.2;
+	// }
+	// else if (var_v < 100 && var_v > 20)
+	// {
+	// 	sigma_v = 1.1;
+	// }
 
 	int             i_stride = stride;
 	int             i_w = width;
@@ -3579,34 +3658,34 @@ static void gaussian_filter_UV(uint8_t* p_src, int width, int height, int stride
 	//**** calculate the gaussian template d_gauss
 	for (int i = 0; i < N; i++)
 	{
-		for (int j = 0; j < 2 * N; j+=2)
+		for (int j = 0; j < 2 * N; j += 2)
 		{
 			double distance = (radius - i) * (radius - i) + (radius - j / 2) * (radius - j / 2);
-			double temp = exp((0 - distance) / (2 * sigma * sigma)) / 2 * PI_gaussian * sigma * sigma;
+			double temp = exp((0 - distance) / (2 * sigma_u * sigma_u)) / 2 * PI_gaussian * sigma_u * sigma_u;
 			d_sum_U += temp;
 			d_gauss[i * (2 * N) + j] = temp;
 		}
 	}
 	for (int i = 0; i < N; i++)
 	{
-		for (int j = 1; j < 2 * N + 1; j+=2)
+		for (int j = 1; j < 2 * N + 1; j += 2)
 		{
 			double distance = (radius - i) * (radius - i) + (radius - j / 2) * (radius - j / 2);
-			double temp = exp((0 - distance) / (2 * sigma * sigma)) / 2 * PI_gaussian * sigma * sigma;
+			double temp = exp((0 - distance) / (2 * sigma_v * sigma_v)) / 2 * PI_gaussian * sigma_v * sigma_v;
 			d_sum_V += temp;
 			d_gauss[i * (2 * N) + j] = temp;
 		}
 	}
 	for (int i = 0; i < N; i++)
 	{
-		for (int j = 0; j < 2 * N; j+=2)
+		for (int j = 0; j < 2 * N; j += 2)
 		{
 			d_gauss[i * (2 * N) + j] /= d_sum_U;
-		}	
+		}
 	}
 	for (int i = 0; i < N; i++)
 	{
-		for (int j = 1; j < 2 * N + 1; j+=2)
+		for (int j = 1; j < 2 * N + 1; j += 2)
 		{
 			d_gauss[i * (2 * N) + j] /= d_sum_V;
 		}
@@ -3614,13 +3693,13 @@ static void gaussian_filter_UV(uint8_t* p_src, int width, int height, int stride
 	//**** guassian filter
 	for (int j = radius; j < i_h - radius; j++)
 	{
-		for (int i = 2 * radius; i < i_w - 2 * radius; i+=2)
+		for (int i = 2 * radius; i < i_w - 2 * radius; i += 2)
 		{
 			double sum_U = 0.0;
 			int index_U = 0;
 			for (int m = j - radius; m <= j + radius; m++)
 			{
-				for (int n = i - 2 * radius; n <= i + 2 * radius; n+=2)
+				for (int n = i - 2 * radius; n <= i + 2 * radius; n += 2)
 				{
 					sum_U += p_src[m * i_stride + n] * d_gauss[index_U];
 					index_U += 2;
@@ -3636,13 +3715,13 @@ static void gaussian_filter_UV(uint8_t* p_src, int width, int height, int stride
 	}
 	for (int j = radius; j < i_h - radius; j++)
 	{
-		for (int i = 2 * radius + 1; i < i_w - 2 * radius + 1; i+=2)
+		for (int i = 2 * radius + 1; i < i_w - 2 * radius + 1; i += 2)
 		{
 			double sum_V = 0.0;
 			int index_V = 1;
 			for (int m = j - radius; m <= j + radius; m++)
 			{
-				for (int n = i - 2 * radius; n <= i + 2 * radius; n+=2)
+				for (int n = i - 2 * radius; n <= i + 2 * radius; n += 2)
 				{
 					sum_V += p_src[m * i_stride + n] * d_gauss[index_V];
 					index_V += 2;
@@ -3692,7 +3771,7 @@ static void CLHE(uint8_t *p_src, uint8_t *p_he, int width, int height, int strid
 	}
 
 	//将少加的像素平均分配到0-255
-	int bonus = steal / 256; 
+	int bonus = steal / 256;
 	for (int k = 0; k < 256; k++)
 	{
 		tmp[k] += bonus;
@@ -3724,92 +3803,160 @@ static void CLHE(uint8_t *p_src, uint8_t *p_he, int width, int height, int strid
 #endif
 
 
-#if gamma
 static double is_balance_histogram(uint8_t* p_src, int row, int col, int stride)
 {
-    int i = 0, j = 0, temp = 0;
-    int size = row * col;
+	int i = 0, j = 0, temp = 0;
+	int size = row * col;
 
-    //统计直方图每个灰度的像素值的累计数目
-    unsigned int hist[256] = { 0 };
-    for (i = 0; i < row; i++)
-    {
-        for (j = 0; j < col; j++)
-        {
-            temp = p_src[i * stride + j];
-            hist[temp]++;
-        }
-    }
-    
-    // 计算灰度像素均值
-    double mean = 0;
-    for (i = 0; i < 256; ++i) 
-    {
-        mean += i * hist[i];
-    }
-    mean = mean / (row*col);
+	//统计直方图每个灰度的像素值的累计数目
+	unsigned int hist[256] = { 0 };
+	for (i = 0; i < row; i++)
+	{
+		for (j = 0; j < col; j++)
+		{
+			temp = p_src[i * stride + j];
+			hist[temp]++;
+		}
+	}
 
-    // 计算方差
-    double var = 0;
-    for (i = 0; i < 256; ++i)
-    {
-        var += pow(i - mean, 2)*hist[i];
-    }
-    var = var / (row*col);
+	// 计算灰度像素均值
+	double mean = 0;
+	for (i = 0; i < 256; ++i)
+	{
+		mean += i * hist[i];
+	}
+	mean = mean / size;
 
-    return var;
+	// 计算方差
+	double var = 0;
+	for (i = 0; i < 256; ++i)
+	{
+		var += pow(i - mean, 2)*hist[i];
+	}
+	var = var / size;
+
+	return var;
+}
+
+static double is_balance_histogram_u(uint8_t* p_src, int row, int col, int stride)
+{
+	int i = 0, j = 0, temp_u = 0;
+	int size = row * col;
+
+	//统计直方图每个U分量的像素值的累计数目
+	unsigned int hist_u[256] = { 0 };
+	for (i = 0; i < row; i++)
+	{
+		for (j = 0; j < 2 * col; j += 2)
+		{
+			temp_u = p_src[i * stride + j];
+			hist_u[temp_u]++;
+		}
+	}
+
+	// 计算灰度像素均值
+	double mean_u = 0;
+	for (i = 0; i < 256; ++i)
+	{
+		mean_u += i * hist_u[i];
+	}
+	mean_u = mean_u / size;
+
+	// 计算方差
+	double var_u = -1;
+	for (i = 0; i < 256; ++i)
+	{
+		var_u += pow(i - mean_u, 2)*hist_u[i];
+	}
+	var_u = var_u / size;
+
+	return var_u;
+}
+
+static double is_balance_histogram_v(uint8_t* p_src, int row, int col, int stride)
+{
+	int i = 0, j = 0, temp_v = 0;
+	int size = row * col;
+
+	//统计直方图每个V分量的像素值的累计数目
+	unsigned int hist_v[256] = { 0 };
+	for (i = 0; i < row; i++)
+	{
+		for (j = 1; j < 2 * col; j += 2)
+		{
+			temp_v = p_src[i * stride + j];
+			hist_v[temp_v]++;
+		}
+	}
+
+	// 计算灰度像素均值
+	double mean_v = 0;
+	for (i = 0; i < 256; ++i)
+	{
+		mean_v += i * hist_v[i];
+	}
+	mean_v = mean_v / size;
+
+	// 计算方差
+	double var_v = -1;
+	for (i = 0; i < 256; ++i)
+	{
+		var_v += pow(i - mean_v, 2)*hist_v[i];
+	}
+	var_v = var_v / size;
+
+	return var_v;
 }
 
 
 static void bilateralFilter(uint8_t* mask, int row, int col, int Window_D, float varD, float varR, int stride)
 {
-    float w = 0; //卷积核
-    float power = 0; //幂
-    float sumW = 0; //卷积核的和
-    float sumGrayW = 0; //像素与卷积核的乘积的和
-    int x = 0, y = 0, k = 0, l = 0;
-    //遍历图像数据
-    for (x = Window_D / 2; x < row - Window_D / 2; x++)
-    {
-        for (y = Window_D / 2; y < col - Window_D / 2; y++)
-        {
-            //求卷积核w  w = d * r (空域核d，值域核r)
-            for (k = x - Window_D / 2; k <= x + Window_D / 2; k++)
-            {
-                for (l = y - Window_D / 2; l <= y + Window_D / 2; l++)
-                {
-                    power = (pow((x - k), 2) + pow((y - l), 2)) / (2 * varD * varD);
-                    power += pow((mask[x*stride +y] - mask[k*stride +l]), 2) / (2 * varR * varR);
-                    w = exp(-power);
+	float w = 0; //卷积核
+	float power = 0; //幂
+	float sumW = 0; //卷积核的和
+	float sumGrayW = 0; //像素与卷积核的乘积的和
+	int x = 0, y = 0, k = 0, l = 0;
+	//遍历图像数据
+	for (x = Window_D / 2; x < row - Window_D / 2; x++)
+	{
+		for (y = Window_D / 2; y < col - Window_D / 2; y++)
+		{
+			//求卷积核w  w = d * r (空域核d，值域核r)
+			for (k = x - Window_D / 2; k <= x + Window_D / 2; k++)
+			{
+				for (l = y - Window_D / 2; l <= y + Window_D / 2; l++)
+				{
+					power = (pow((x - k), 2) + pow((y - l), 2)) / (2 * varD * varD);
+					power += pow((mask[x*stride + y] - mask[k*stride + l]), 2) / (2 * varR * varR);
+					w = exp(-power);
 
-                    //像素与卷积核的乘积的和
-                    sumGrayW += mask[k*stride + l] * w;
-                    //卷积核的和
-                    sumW += w;
-                }
-            }
-            //计算窗口中心像素值 = 像素与卷积核的乘积的和 / 卷积核的和
-            mask[x*stride + y] = (uint8_t)(255 - sumGrayW / sumW);
+					//像素与卷积核的乘积的和
+					sumGrayW += mask[k*stride + l] * w;
+					//卷积核的和
+					sumW += w;
+				}
+			}
+			//计算窗口中心像素值 = 像素与卷积核的乘积的和 / 卷积核的和
+			mask[x*stride + y] = (uint8_t)(255 - sumGrayW / sumW);
 
-            //每算完一个像素值清零
-            sumGrayW = 0;
-            sumW = 0;
-        }
-    }
+			//每算完一个像素值清零
+			sumGrayW = 0;
+			sumW = 0;
+		}
+	}
 }
 
-static void inverse_img(uint8_t* mask, int row, int col, int stride) 
+static void inverse_img(uint8_t* mask, int row, int col, int stride)
 {
-    int i = 0, j = 0;
-    for (i = 0; i < row; ++i) 
-    {
-        for (j = 0; j < col; ++j)
-        {
-            mask[i*stride + j] = 255 - mask[i*stride + j];
-        }
-    }
+	int i = 0, j = 0;
+	for (i = 0; i < row; ++i)
+	{
+		for (j = 0; j < col; ++j)
+		{
+			mask[i*stride + j] = 255 - mask[i*stride + j];
+		}
+	}
 }
-#endif
 
 
 static void* slices_write(x264_t* h)
@@ -3817,12 +3964,23 @@ static void* slices_write(x264_t* h)
 	int i_slice_num = 0;
 	int last_thread_mb = h->sh.i_last_mb;
 	int round_bias = h->param.i_avcintra_class ? 0 : h->param.i_slice_count / 2;
-
-
+	double var = -1;
+	double var_u = -1, var_v = -1;
+	if (h->param.GAMMA1 == 1 || h->param.GAUSSIAN1 == 1)
+	{
+		var = is_balance_histogram(h->fenc->plane[0], h->param.i_height, h->param.i_width, h->fenc->i_stride[0]);
+		// printf("var=%f\n",var);
+	}
+	if (h->param.UV_GAUSSIAN1 == 1)
+	{
+		var_u = is_balance_histogram_u(h->fenc->plane[1], h->param.i_height / 2, h->param.i_width / 2, h->fenc->i_stride[1]);
+		var_v = is_balance_histogram_v(h->fenc->plane[1], h->param.i_height / 2, h->param.i_width / 2, h->fenc->i_stride[1]);
+		// printf("var_u=%f, var_v=%f\n",var_u,var_v);
+	}
 	//Murphy
 
 //=============================================================gamma校正 Y分量
-	if (h->param.GAMMA1 == 1)
+	if (h->param.GAMMA1 == 1 && (var < 1000 | var > 5000))
 	{
 		uint8_t* g_src = h->fenc->plane[0];
 
@@ -3831,15 +3989,15 @@ static void* slices_write(x264_t* h)
 		// h->param.pic_cnt++;
 
 		uint8_t* p_gamma = (uint8_t*)malloc(sizeof(uint8_t) * (h->fenc->i_stride[0] * h->param.i_height));
-        uint8_t* mask = (uint8_t*)malloc(sizeof(uint8_t) * (h->fenc->i_stride[0] * h->param.i_height));
+		uint8_t* mask = (uint8_t*)malloc(sizeof(uint8_t) * (h->fenc->i_stride[0] * h->param.i_height));
 		memcpy(p_gamma, h->fenc->plane[0], sizeof(uint8_t) * (h->fenc->i_stride[0] * h->param.i_height));
-        memcpy(mask, h->fenc->plane[0], sizeof(uint8_t) * (h->fenc->i_stride[0] * h->param.i_height));
+		memcpy(mask, h->fenc->plane[0], sizeof(uint8_t) * (h->fenc->i_stride[0] * h->param.i_height));
 
-		double var = is_balance_histogram(mask, h->param.i_height, h->param.i_width, h->fenc->i_stride[0]);
-        int need_gamma = var < 1000 | var > 5000;
+		// double var = is_balance_histogram(mask, h->param.i_height, h->param.i_width, h->fenc->i_stride[0]);
+		int need_gamma = (var < 1000 | var > 5000) & (var >= 0);
 
 #if gamma			
-		if (need_gamma) 
+		if (need_gamma)
 		{
 			int temp;
 			int size = h->param.i_width * h->param.i_height;
@@ -3855,27 +4013,38 @@ static void* slices_write(x264_t* h)
 
 			// bilateralFilter(mask, h->param.i_height, h->param.i_width, 3, 50, 50, h->fenc->i_stride[0]);
 			inverse_img(mask, h->param.i_height, h->param.i_width, h->fenc->i_stride[0]);
-            
+
 #if gaussian_new_avx2
-            init_gauss_coeff(g_gauss_coeff);
-            gaussian_filter_avx2(mask, h->fenc->i_stride[0], g_src, h->fenc->i_stride[0], g_gauss_coeff, h->param.i_width, h->param.i_height);
-#else
-            gaussian_filter(g_src, h->param.i_width, h->param.i_height, h->fenc->i_stride[0], mask);
-#endif
-            
-			for (int i = 16; i < h->param.i_height-16; i++)
+			double  sigma = 1.0;
+			if (var >= 5000)
 			{
-				for (int j = 16; j < h->param.i_width-16; j++)
+				sigma = 1;
+			}
+			else
+			{
+				sigma = 1.1;
+			}
+
+			init_gauss_coeff(g_gauss_coeff, sigma);
+			gaussian_filter_avx2(mask, h->fenc->i_stride[0], g_src, h->fenc->i_stride[0], g_gauss_coeff, h->param.i_width, h->param.i_height);
+			gaussian_filter_end(g_src, h->param.i_width, h->param.i_height, h->fenc->i_stride[0], 16, mask);
+#else
+			gaussian_filter(g_src, h->param.i_width, h->param.i_height, h->fenc->i_stride[0], mask);
+#endif
+
+			for (int i = 0; i < h->param.i_height; i++)
+			{
+				for (int j = 0; j < h->param.i_width; j++)
 				{
 					float a = 1.0 * g_src[i*h->fenc->i_stride[0] + j] / 255;
-                    float alpha = var < 1000 ? 0.80 : 0.20;
+					float alpha = var < 1000 ? 0.5 : 0.15;
 					float gam_power = alpha * (mean - mask[i*h->fenc->i_stride[0] + j]) / 128.0;
-					float gam_ratio = pow(2, gam_power); 
+					float gam_ratio = pow(2, gam_power);
 
 					// float gam_ratio = 1.0 + 1.0 * (mean - 128) / 100000; // 待修改
-					
+
 					float s = pow(a, gam_ratio);
-					temp = floor(s*255+0.5);
+					temp = floor(s * 255 + 0.5);
 
 					if (temp > 255)
 					{
@@ -3898,10 +4067,10 @@ static void* slices_write(x264_t* h)
 		memcpy(h->fenc->plane[0], p_gamma, sizeof(uint8_t) * (h->fenc->i_stride[0] * h->param.i_height));
 
 		free(p_gamma);
-        free(mask);
+		free(mask);
 	}
 
-//=============================================================直方图均衡化 Y分量
+	//=============================================================直方图均衡化 Y分量
 	if (h->param.HistogramEqualization1 == 1)
 	{
 		uint8_t* p_src = h->fenc->plane[0];
@@ -3910,7 +4079,7 @@ static void* slices_write(x264_t* h)
 
 #if HistogramEqualization
 		double ratio_he = (double)h->param.HistogramEqualization1_STRENGTH;
-		CLHE(p_src, p_he, h->param.i_width, h->param.i_height, h->fenc->i_stride[0],ratio_he);
+		CLHE(p_src, p_he, h->param.i_width, h->param.i_height, h->fenc->i_stride[0], ratio_he);
 #endif
 
 		memcpy(h->fenc->plane[0], p_he, sizeof(uint8_t) * (h->fenc->i_stride[0] * h->param.i_height));
@@ -3919,7 +4088,7 @@ static void* slices_write(x264_t* h)
 	}
 
 
-//=============================================================高斯滤波 Y分量
+	//=============================================================高斯滤波 Y分量
 	if (h->param.GAUSSIAN1 == 1) //調用函數
 	{
 		// 对亮度分量进行高斯滤波
@@ -3930,23 +4099,45 @@ static void* slices_write(x264_t* h)
 		memcpy(ptmp, h->fenc->plane[0], sizeof(uint8_t) * (h->fenc->i_stride[0] * h->param.i_height));
 
 #if gaussian_new_avx2
-		init_gauss_coeff(g_gauss_coeff);
+		double sigma = 1.0;
+
+		if (var <= 500)
+		{
+			sigma = 1.25;
+		}
+		else if (var < 1000 && var > 500)
+		{
+			sigma = 1.15;
+		}
+		else if (var < 2000 && var > 1500)
+		{
+			sigma = 0.75;
+		}
+		else if (var > 2000)
+		{
+			sigma = 0.5;
+		}
+		else
+		{
+			sigma = 1.0;
+		}
+		init_gauss_coeff(g_gauss_coeff, sigma);
 		gaussian_filter_avx2(ptmp, h->fenc->i_stride[0], psrc, h->fenc->i_stride[0], g_gauss_coeff, h->param.i_width, h->param.i_height);
-		init_gauss_coeff(g_gauss_coeff);
+		init_gauss_coeff(g_gauss_coeff, sigma);
 		gaussian_filter_avx2(pdst, h->fenc->i_stride[0], ptmp, h->fenc->i_stride[0], g_gauss_coeff, h->param.i_width, h->param.i_height);
 #else
 		gaussian_filter(psrc, h->param.i_width, h->param.i_height, h->fenc->i_stride[0], ptmp);
 		gaussian_filter(ptmp, h->param.i_width, h->param.i_height, h->fenc->i_stride[0], pdst);
 #endif
 #if GAUSSIAN_CLIP
-		uint8_t temp_num = 30;
+		uint8_t temp_num = 15;
 		for (int i = 0; i < h->param.i_width * h->param.i_height; i++)
 		{
-			if(pdst[i] - psrc[i] > temp_num)
+			if (pdst[i] - psrc[i] > temp_num)
 			{
 				pdst[i] = psrc[i] + temp_num;
 			}
-			if(psrc[i] - pdst[i] > temp_num)
+			if (psrc[i] - pdst[i] > temp_num)
 			{
 				pdst[i] = psrc[i] - temp_num;
 			}
@@ -3986,11 +4177,11 @@ static void* slices_write(x264_t* h)
 
 	}
 
-//=============================================================高斯滤波 UV分量		
+	//=============================================================高斯滤波 UV分量		
 	if (h->param.UV_GAUSSIAN1 == 1) //調用函數
-	{	
+	{
 #if UV_GAUSSIN 
-		if( (h->fenc->i_stride[1]==h->fenc->i_stride[2]) && (h->fenc->i_stride[2]!=0) )
+		if ((h->fenc->i_stride[1] == h->fenc->i_stride[2]) && (h->fenc->i_stride[2] != 0))
 		{
 			for (int m = 1; m < 3;m++)
 			{
@@ -3999,22 +4190,23 @@ static void* slices_write(x264_t* h)
 				uint8_t* ptmp_uv = (uint8_t*)malloc(sizeof(uint8_t) * (h->fenc->i_stride[m] * h->param.i_height / 2));
 				// memcpy(pdst, h->fenc->plane[m], sizeof(uint8_t) * (h->fenc->i_stride[m] * h->param.i_height / 2));
 				memcpy(ptmp_uv, h->fenc->plane[m], sizeof(uint8_t) * (h->fenc->i_stride[m] * h->param.i_height / 2));
-	#if gaussian_new_avx2
-				init_gauss_coeff(g_gauss_coeff);
+#if gaussian_new_avx2
+				double sigma = 1.0;
+				init_gauss_coeff(g_gauss_coeff, sigma);
 				gaussian_filter_avx2(ptmp_uv, h->fenc->i_stride[m], psrc_uv, h->fenc->i_stride[m], g_gauss_coeff, h->fenc->i_stride[m], h->param.i_height / 2);
 				// init_gauss_coeff(g_gauss_coeff);
 				// gaussian_filter_avx2(pdst, h->fenc->i_stride[m], ptmp, h->fenc->i_stride[m], g_gauss_coeff, h->fenc->i_stride[m], h->param.i_height / 2);
-	#else
-				gaussian_filter(psrc_uv, h->param.i_width / 2, h->param.i_height / 2 , h->fenc->i_stride[m], ptmp_uv);
+#else
+				gaussian_filter(psrc_uv, h->param.i_width / 2, h->param.i_height / 2, h->fenc->i_stride[m], ptmp_uv);
 				// gaussian_filter(ptmp, h->param.i_width / 2, h->param.i_height / 2 , h->fenc->i_stride[m], pdst);
-	#endif
+#endif
 
 				int temp;
 				double ratio = (double)h->param.UV_GAUSSIAN1_STRENGTH;
 
 				for (int i = 0; i < h->param.i_height / 2; i++)
 				{
-					for (int j = 0; j < h->fenc->i_stride[m] ; j++)
+					for (int j = 0; j < h->fenc->i_stride[m]; j++)
 					{
 						temp = psrc_uv[i * h->fenc->i_stride[m] + j] + ratio * psrc_uv[i * h->fenc->i_stride[m] + j] - ratio * ptmp_uv[i * h->fenc->i_stride[m] + j];
 
@@ -4040,20 +4232,20 @@ static void* slices_write(x264_t* h)
 
 			}
 		}
-		else{
+		else {
 			//*********************************************************************************************************UV隔列存储
 			uint8_t *psrc_uv = h->fenc->plane[1];
 			uint8_t* ptmp_uv = (uint8_t*)malloc(sizeof(uint8_t) * (h->fenc->i_stride[1] * h->param.i_height / 2));
 			memcpy(ptmp_uv, h->fenc->plane[1], sizeof(uint8_t) * (h->fenc->i_stride[1] * h->param.i_height / 2));
 
-			gaussian_filter_UV(psrc_uv, h->param.i_width / 2, h->param.i_height / 2 , h->fenc->i_stride[1], ptmp_uv);
+			gaussian_filter_UV(psrc_uv, h->param.i_width / 2, h->param.i_height / 2, h->fenc->i_stride[1], ptmp_uv, var_u, var_v);
 
 			int temp;
 			double ratio = (double)h->param.UV_GAUSSIAN1_STRENGTH;
 
 			for (int i = 0; i < h->param.i_height / 2; i++)
 			{
-				for (int j = 0; j < h->param.i_width / 2 ; j++)
+				for (int j = 0; j < h->param.i_width / 2; j++)
 				{
 					temp = psrc_uv[i * h->fenc->i_stride[1] + j] + ratio * psrc_uv[i * h->fenc->i_stride[1] + j] - ratio * ptmp_uv[i * h->fenc->i_stride[1] + j];
 
@@ -4246,9 +4438,9 @@ static void* slices_write(x264_t* h)
 	}
 
 	free(h->fenc->Lum_Y);
-    free(h->fenc->Lum_bg);
-    free(h->fenc->Lum_f2);
-    free(h->fenc->Lum_sjnd);
+	free(h->fenc->Lum_bg);
+	free(h->fenc->Lum_f2);
+	free(h->fenc->Lum_sjnd);
 
 
 	/* init stats */
@@ -4420,7 +4612,7 @@ int     x264_encoder_encode(x264_t* h,
 	x264_picture_t* pic_in,
 	x264_picture_t* pic_out)
 {
-	x264_t* thread_current, * thread_prev, * thread_oldest;
+	x264_t* thread_current, *thread_prev, *thread_oldest;
 	int i_nal_type, i_nal_ref_idc, i_global_qp;
 	int overhead = NALU_OVERHEAD;
 
